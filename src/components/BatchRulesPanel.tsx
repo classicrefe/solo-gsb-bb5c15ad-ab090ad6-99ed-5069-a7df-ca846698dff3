@@ -1,4 +1,4 @@
-import { useMemo, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import {
   BatchRulePatternError,
   compilePattern,
@@ -32,7 +32,13 @@ export default function BatchRulesPanel({ conflicts, resolutions, onApply, onLoc
   const [rows, setRows] = useState<RuleRow[]>([{ id: 1, pattern: '', choice: 'ours' }]);
   const rowIdRef = useRef(1);
   const [collapsed, setCollapsed] = useState(false);
-  const [resultMsg, setResultMsg] = useState<{ applied: number; skipped: number } | null>(null);
+  const [resultMsg, setResultMsg] = useState<{ applied: number; skipped: number; ids: string[] } | null>(null);
+
+  // 撤销批量应用后，相关冲突恢复为未选择：清除“已应用 N 项”的结果提示
+  useEffect(() => {
+    if (!resultMsg) return;
+    if (resultMsg.ids.some((id) => !resolutions[id])) setResultMsg(null);
+  }, [resolutions, resultMsg]);
 
   const addRow = () => {
     rowIdRef.current += 1;
@@ -108,7 +114,11 @@ export default function BatchRulesPanel({ conflicts, resolutions, onApply, onLoc
   const handleApply = () => {
     if (hasError || rules.length === 0) return;
     const { applied, skippedResolved } = onApply(rules);
-    setResultMsg({ applied: applied.length, skipped: skippedResolved.length });
+    if (applied.length === 0) {
+      setResultMsg(null);
+      return;
+    }
+    setResultMsg({ applied: applied.length, skipped: skippedResolved.length, ids: applied });
   };
 
   const pointerText = (pointer: string) => pointer || '（根节点）';

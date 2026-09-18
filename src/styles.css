@@ -313,6 +313,19 @@ pre {
 .badge.resolved { color: #06281f; background: var(--green); }
 
 /* ---------- 冲突面板 ---------- */
+.history-bar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 10px;
+  flex-shrink: 0;
+}
+
+.history-bar .history-hint {
+  font-size: 12px;
+  color: var(--text-dim);
+}
+
 .progress-line {
   font-size: 13px;
   color: var(--text-dim);

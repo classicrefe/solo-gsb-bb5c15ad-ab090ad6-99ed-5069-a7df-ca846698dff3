@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import BatchRulesPanel from './BatchRulesPanel';
 import ConflictPanel from './ConflictPanel';
 import MergeTree from './MergeTree';
@@ -9,23 +9,51 @@ import {
   type Resolutions,
 } from '../merge/threeWayMerge';
 import { applyBatchRules, type BatchRule } from '../merge/batchRules';
+import type { HistoryTransaction, TransactionKind } from '../merge/history';
 import { createSnapshot, type RestoreSummary } from '../merge/snapshot';
 import { downloadText } from '../download';
 
 interface Props {
   mergeResult: MergeResult;
   resolutions: Resolutions;
-  onResolutionsChange: (r: Resolutions) => void;
+  /** 提交一组新选择：手动决策传 'manual'（单冲突），批量应用传 'batch'（整批一个事务）；
+   *  与当前状态无差异时返回 null（不产生事务） */
+  onCommit: (kind: TransactionKind, next: Resolutions) => HistoryTransaction | null;
+  onUndo: () => HistoryTransaction | null;
+  onRedo: () => HistoryTransaction | null;
+  canUndo: boolean;
+  canRedo: boolean;
+  /** 栈顶事务，用于按钮提示 */
+  undoTransaction: HistoryTransaction | null;
+  redoTransaction: HistoryTransaction | null;
   onFinish: () => void;
   onBack: () => void;
   /** 从快照导入时的恢复汇总（非快照导入时为 null） */
   restoreInfo: RestoreSummary | null;
 }
 
+/** 判断元素是否为原生文本编辑控件（聚焦其中时不拦截 Ctrl/Cmd+Z 等编辑快捷键） */
+function isEditableTarget(el: EventTarget | null): boolean {
+  if (!(el instanceof HTMLElement)) return false;
+  if (el.tagName === 'TEXTAREA' || el.isContentEditable) return true;
+  if (el.tagName === 'INPUT') {
+    // 仅文本类输入框需要保留原生撤销；复选框 / 单选框等不拦截
+    const textTypes = ['', 'text', 'search', 'url', 'tel', 'email', 'password', 'number'];
+    return textTypes.includes((el as HTMLInputElement).type.toLowerCase());
+  }
+  return false;
+}
+
 export default function MergeStage({
   mergeResult,
   resolutions,
-  onResolutionsChange,
+  onCommit,
+  onUndo,
+  onRedo,
+  canUndo,
+  canRedo,
+  undoTransaction,
+  redoTransaction,
   onFinish,
   onBack,
   restoreInfo,
@@ -43,9 +71,43 @@ export default function MergeStage({
   const { total, resolved } = countConflicts(mergeResult.root, resolutions);
   const allResolved = total === resolved;
 
+  /** 撤销/重做后定位到该事务涉及的首个冲突（仍存在时） */
+  const focusFirstChanged = (transaction: HistoryTransaction | null) => {
+    const id = transaction?.changes[0]?.id;
+    if (id !== undefined && mergeResult.conflicts.some((c) => c.id === id)) {
+      setSelectedId(id);
+    }
+  };
+
+  const handleUndo = () => focusFirstChanged(onUndo());
+  const handleRedo = () => focusFirstChanged(onRedo());
+
+  // 快捷键：Ctrl/Cmd+Z 撤销，Ctrl/Cmd+Shift+Z 或 Ctrl/Cmd+Y 重做；
+  // 焦点位于文本输入框 / 文本域 / contenteditable 时不拦截，保留原生编辑行为。
+  useEffect(() => {
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (!(e.ctrlKey || e.metaKey) || e.altKey) return;
+      if (isEditableTarget(e.target)) return;
+      const key = e.key.toLowerCase();
+      if (key === 'z' && !e.shiftKey) {
+        if (!canUndo) return;
+        e.preventDefault();
+        handleUndo();
+      } else if ((key === 'z' && e.shiftKey) || key === 'y') {
+        if (!canRedo) return;
+        e.preventDefault();
+        handleRedo();
+      }
+    };
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [canUndo, canRedo, onUndo, onRedo, mergeResult.conflicts]);
+
   const handleResolve = (id: string, res: Resolution) => {
     const next = { ...resolutions, [id]: res };
-    onResolutionsChange(next);
+    // 手动采用当前/目标或提交自定义值：每次记为一个历史事务
+    onCommit('manual', next);
     // 自动跳到下一个未解决的冲突
     const nextUnresolved = mergeResult.conflicts.find((c) => c.id !== id && !next[c.id]);
     if (nextUnresolved) setSelectedId(nextUnresolved.id);
@@ -56,10 +118,13 @@ export default function MergeStage({
     downloadText('merge-session-snapshot.json', JSON.stringify(snapshot, null, 2));
   };
 
-  // 批量决策规则：自上而下首条命中，只处理尚未选择的冲突，绝不覆盖已有选择
+  // 批量决策规则：自上而下首条命中，只处理尚未选择的冲突，绝不覆盖已有选择。
+  // 一次应用整体记为一个事务，撤销/重做时同步恢复该批次涉及的全部冲突。
   const handleApplyBatch = (rules: BatchRule[]) => {
     const result = applyBatchRules(rules, mergeResult.conflicts, resolutions);
-    onResolutionsChange(result.resolutions);
+    if (result.applied.length > 0) {
+      onCommit('batch', result.resolutions);
+    }
     // 应用后定位到第一个仍未解决的冲突，便于继续逐项处理
     const nextUnresolved = mergeResult.conflicts.find((c) => !result.resolutions[c.id]);
     if (nextUnresolved) setSelectedId(nextUnresolved.id);
@@ -92,6 +157,31 @@ export default function MergeStage({
         </div>
         <div className="conflict-panel">
           <h3>冲突解决</h3>
+          <div className="history-bar">
+            <button
+              type="button"
+              className="small"
+              onClick={handleUndo}
+              disabled={!canUndo}
+              title={undoTransaction ? `撤销：${undoTransaction.label}（Ctrl/⌘+Z）` : '没有可撤销的决策'}
+            >
+              ↩ 撤销
+            </button>
+            <button
+              type="button"
+              className="small"
+              onClick={handleRedo}
+              disabled={!canRedo}
+              title={
+                redoTransaction
+                  ? `重做：${redoTransaction.label}（Ctrl/⌘+Shift+Z）`
+                  : '没有可重做的决策'
+              }
+            >
+              ↪ 重做
+            </button>
+            <span className="history-hint">Ctrl/⌘+Z 撤销 · Ctrl/⌘+Shift+Z 重做</span>
+          </div>
           {restoreInfo && showRestoreInfo && (
             <div className="restore-banner">
               <div className="restore-head">

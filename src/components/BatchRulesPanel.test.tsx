@@ -4,6 +4,12 @@ import { createRoot } from 'react-dom/client';
 import { describe, expect, it } from 'vitest';
 import MergeStage from './MergeStage';
 import { threeWayMerge, type Resolutions } from '../merge/threeWayMerge';
+import {
+  initHistory,
+  resolutionHistoryReducer,
+  type ResolutionHistoryState,
+  type TransactionKind,
+} from '../merge/history';
 import type { JsonValue } from '../merge/types';
 
 (globalThis as Record<string, unknown>).IS_REACT_ACT_ENVIRONMENT = true;
@@ -45,24 +51,45 @@ function setup(initial: Resolutions = {}) {
     '/meta',
   ]);
 
-  let resolutions: Resolutions = initial;
+  let history: ResolutionHistoryState = initHistory(initial);
   const render = makeRenderer(container);
-  const rerender = () =>
+  const rerender = () => {
+    const canUndo = history.past.length > 0;
+    const canRedo = history.future.length > 0;
     render(
       <MergeStage
         mergeResult={mergeResult}
-        resolutions={resolutions}
-        onResolutionsChange={(r) => {
-          resolutions = r;
+        resolutions={history.present}
+        onCommit={(kind: TransactionKind, next: Resolutions) => {
+          const prevLength = history.past.length;
+          history = resolutionHistoryReducer(history, { type: 'commit', kind, next });
           rerender();
+          return history.past.length > prevLength ? history.past[history.past.length - 1] : null;
         }}
+        onUndo={() => {
+          const tx = history.past[history.past.length - 1] ?? null;
+          history = resolutionHistoryReducer(history, { type: 'undo' });
+          rerender();
+          return tx;
+        }}
+        onRedo={() => {
+          const tx = history.future[0] ?? null;
+          history = resolutionHistoryReducer(history, { type: 'redo' });
+          rerender();
+          return tx;
+        }}
+        canUndo={canUndo}
+        canRedo={canRedo}
+        undoTransaction={canUndo ? history.past[history.past.length - 1] : null}
+        redoTransaction={canRedo ? history.future[0] : null}
         onFinish={() => {}}
         onBack={() => {}}
         restoreInfo={null}
       />,
     );
+  };
   rerender();
-  return { container, getResolutions: () => resolutions, mergeResult };
+  return { container, getResolutions: () => history.present, mergeResult };
 }
 
 describe('MergeStage 批量决策规则集成', () => {

@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useReducer, useState } from 'react';
 import InputStage from './components/InputStage';
 import MergeStage from './components/MergeStage';
 import OutputStage from './components/OutputStage';
@@ -16,6 +16,14 @@ import {
   type RestoreSummary,
   type SessionSnapshot,
 } from './merge/snapshot';
+import {
+  describeResolution,
+  diffResolutions,
+  initHistory,
+  resolutionHistoryReducer,
+  type HistoryTransaction,
+  type TransactionKind,
+} from './merge/history';
 
 type Stage = 'input' | 'merge' | 'output';
 
@@ -23,7 +31,9 @@ export default function App() {
   const [stage, setStage] = useState<Stage>('input');
   const [baseDoc, setBaseDoc] = useState<JsonValue | null>(null);
   const [mergeResult, setMergeResult] = useState<MergeResult | null>(null);
-  const [resolutions, setResolutions] = useState<Resolutions>({});
+  // 决策历史（撤销/重做）在「冲突处理 ↔ 输出」两阶段之间持续保留
+  const [history, dispatchHistory] = useReducer(resolutionHistoryReducer, {}, initHistory);
+  const resolutions = history.present;
   const [merged, setMerged] = useState<JsonValue | null>(null);
   const [patch, setPatch] = useState<PatchOp[]>([]);
   // 快照导入的恢复汇总（进入合并页时展示一次）
@@ -35,24 +45,55 @@ export default function App() {
   const handleMerge = (base: JsonValue, ours: JsonValue, theirs: JsonValue) => {
     setBaseDoc(base);
     setMergeResult(threeWayMerge(base, ours, theirs));
-    setResolutions({});
+    dispatchHistory({ type: 'reset', present: {} });
     setMerged(null);
     setPatch([]);
     setRestoreInfo(null);
     setStage('merge');
   };
 
-  // 导入会话快照：用快照中的三份源 JSON 重新执行三方合并，再按指针 + 三方值恢复选择
+  // 导入会话快照：用快照中的三份源 JSON 重新执行三方合并，再按指针 + 三方值恢复选择。
+  // 恢复结果作为不可撤销的初始状态（清空撤销/重做历史）。
   const handleImportSnapshot = (snapshot: SessionSnapshot) => {
     const result = threeWayMerge(snapshot.base, snapshot.ours, snapshot.theirs);
     const { resolutions: restored, ...summary } = restoreResolutions(snapshot, result);
     setBaseDoc(snapshot.base);
     setMergeResult(result);
-    setResolutions(restored);
+    dispatchHistory({ type: 'reset', present: restored });
     setMerged(null);
     setPatch([]);
     setRestoreInfo(summary);
     setStage('merge');
+  };
+
+  // 手动决策（单个冲突）或一次批量规则应用（多个冲突）→ 各记为一个历史事务
+  const commitResolutions = (kind: TransactionKind, next: Resolutions): HistoryTransaction | null => {
+    const changes = diffResolutions(resolutions, next);
+    if (changes.length === 0) return null;
+    dispatchHistory({ type: 'commit', kind, next });
+    // 以当前状态即时构造事务，供调用方定位首个受影响冲突（label 与 reducer 保持一致）
+    return {
+      kind,
+      label:
+        kind === 'batch'
+          ? `批量应用规则（${changes.length} 项冲突）`
+          : describeResolution(changes[0].after),
+      changes,
+    };
+  };
+
+  const undo = (): HistoryTransaction | null => {
+    if (history.past.length === 0) return null;
+    const transaction = history.past[history.past.length - 1];
+    dispatchHistory({ type: 'undo' });
+    return transaction;
+  };
+
+  const redo = (): HistoryTransaction | null => {
+    if (history.future.length === 0) return null;
+    const transaction = history.future[0];
+    dispatchHistory({ type: 'redo' });
+    return transaction;
   };
 
   const handleFinish = () => {
@@ -68,13 +109,16 @@ export default function App() {
     setStage('input');
     setMergeResult(null);
     setBaseDoc(null);
-    setResolutions({});
+    dispatchHistory({ type: 'reset', present: {} });
     setMerged(null);
     setPatch([]);
     setRestoreInfo(null);
     setSchema(null);
     setSchemaEnabled(false);
   };
+
+  const canUndo = history.past.length > 0;
+  const canRedo = history.future.length > 0;
 
   return (
     <>
@@ -94,7 +138,13 @@ export default function App() {
           <MergeStage
             mergeResult={mergeResult}
             resolutions={resolutions}
-            onResolutionsChange={setResolutions}
+            onCommit={commitResolutions}
+            onUndo={undo}
+            onRedo={redo}
+            canUndo={canUndo}
+            canRedo={canRedo}
+            undoTransaction={canUndo ? history.past[history.past.length - 1] : null}
+            redoTransaction={canRedo ? history.future[0] : null}
             onFinish={handleFinish}
             onBack={handleRestart}
             restoreInfo={restoreInfo}

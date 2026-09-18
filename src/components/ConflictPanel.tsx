@@ -27,7 +27,12 @@ export default function ConflictPanel({ conflicts, resolutions, selectedId, onSe
   const [customText, setCustomText] = useState('');
   const [customError, setCustomError] = useState<string | null>(null);
 
-  // 切换冲突时，用当前冲突的“当前分支”值或已有自定义值填充输入框
+  const committed = conflict ? resolutions[conflict.id] : undefined;
+  // 当前冲突已提交选择的签名：切换冲突、撤销/重做或批量应用导致选择变化时重新同步输入框
+  const committedSignature = committed ? JSON.stringify(committed) : '';
+
+  // 切换冲突，或撤销/重做 / 批量规则改变了当前冲突的已提交选择时，
+  // 用当前冲突的“当前分支”值或已有自定义值填充输入框（用户正在输入时不会触发）
   useEffect(() => {
     if (!conflict) return;
     const res = resolutions[conflict.id];
@@ -38,7 +43,7 @@ export default function ConflictPanel({ conflicts, resolutions, selectedId, onSe
     }
     setCustomError(null);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [conflict?.id]);
+  }, [conflict?.id, committedSignature]);
 
   if (!conflict) {
     return <div className="empty-tip">🎉 没有冲突，所有变更已自动合并</div>;
