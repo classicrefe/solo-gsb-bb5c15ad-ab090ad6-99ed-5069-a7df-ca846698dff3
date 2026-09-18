@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import BatchRulesPanel from './BatchRulesPanel';
 import ConflictPanel from './ConflictPanel';
 import MergeTree from './MergeTree';
@@ -15,7 +15,13 @@ import { downloadText } from '../download';
 interface Props {
   mergeResult: MergeResult;
   resolutions: Resolutions;
+  /** 决策变更（手动单项 / 自定义值 / 一次批量应用整体），App 会记为一个历史事务 */
   onResolutionsChange: (r: Resolutions) => void;
+  /** 是否有可撤销 / 可重做的决策记录（无记录时对应按钮禁用） */
+  canUndo: boolean;
+  canRedo: boolean;
+  onUndo: () => void;
+  onRedo: () => void;
   onFinish: () => void;
   onBack: () => void;
   /** 从快照导入时的恢复汇总（非快照导入时为 null） */
@@ -26,6 +32,10 @@ export default function MergeStage({
   mergeResult,
   resolutions,
   onResolutionsChange,
+  canUndo,
+  canRedo,
+  onUndo,
+  onRedo,
   onFinish,
   onBack,
   restoreInfo,
@@ -42,6 +52,25 @@ export default function MergeStage({
 
   const { total, resolved } = countConflicts(mergeResult.root, resolutions);
   const allResolved = total === resolved;
+
+  // Ctrl/Cmd+Z 撤销、Ctrl/Cmd+Shift+Z 重做；输入框 / 文本域聚焦时不拦截，保留原生编辑撤销
+  useEffect(() => {
+    const onKeyDown = (e: KeyboardEvent) => {
+      if ((!e.ctrlKey && !e.metaKey) || e.key.toLowerCase() !== 'z') return;
+      const target = e.target as HTMLElement | null;
+      if (
+        target !== null &&
+        (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.isContentEditable)
+      ) {
+        return;
+      }
+      e.preventDefault();
+      if (e.shiftKey) onRedo();
+      else onUndo();
+    };
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  }, [onUndo, onRedo]);
 
   const handleResolve = (id: string, res: Resolution) => {
     const next = { ...resolutions, [id]: res };
@@ -123,6 +152,29 @@ export default function MergeStage({
           </div>
           <div className="progress-bar">
             <div style={{ width: total === 0 ? '100%' : `${(resolved / total) * 100}%` }} />
+          </div>
+          <div className="history-bar">
+            <button
+              type="button"
+              className="small"
+              onClick={onUndo}
+              disabled={!canUndo}
+              title="撤销上一项决策（Ctrl/Cmd+Z）"
+            >
+              ↩ 撤销
+            </button>
+            <button
+              type="button"
+              className="small"
+              onClick={onRedo}
+              disabled={!canRedo}
+              title="重做已撤销的决策（Ctrl/Cmd+Shift+Z）"
+            >
+              ↪ 重做
+            </button>
+            <span className="history-hint">
+              每次手动选择 / 自定义值记为一步；一次批量规则应用整体记为一步
+            </span>
           </div>
           {allResolved && (
             <div className="all-done">✅ 全部冲突已解决，可以生成合并结果。</div>

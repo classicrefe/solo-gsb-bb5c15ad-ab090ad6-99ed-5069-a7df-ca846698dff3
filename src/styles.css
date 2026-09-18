@@ -339,6 +339,20 @@ pre {
   transition: width 0.2s;
 }
 
+/* 决策撤销 / 重做 */
+.history-bar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 12px;
+  flex-shrink: 0;
+}
+
+.history-bar .history-hint {
+  font-size: 12px;
+  color: var(--text-dim);
+}
+
 .conflict-nav {
   display: flex;
   gap: 8px;

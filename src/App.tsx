@@ -16,6 +16,16 @@ import {
   type RestoreSummary,
   type SessionSnapshot,
 } from './merge/snapshot';
+import {
+  canRedo,
+  canUndo,
+  createHistory,
+  diffResolutions,
+  pushTransaction,
+  redoTransaction,
+  undoTransaction,
+  type DecisionHistory,
+} from './merge/history';
 
 type Stage = 'input' | 'merge' | 'output';
 
@@ -24,6 +34,8 @@ export default function App() {
   const [baseDoc, setBaseDoc] = useState<JsonValue | null>(null);
   const [mergeResult, setMergeResult] = useState<MergeResult | null>(null);
   const [resolutions, setResolutions] = useState<Resolutions>({});
+  // 决策撤销/重做历史：放在 App 层，输出页 ↔ 冲突页往返后仍可继续撤销/重做
+  const [history, setHistory] = useState<DecisionHistory>(createHistory);
   const [merged, setMerged] = useState<JsonValue | null>(null);
   const [patch, setPatch] = useState<PatchOp[]>([]);
   // 快照导入的恢复汇总（进入合并页时展示一次）
@@ -36,6 +48,7 @@ export default function App() {
     setBaseDoc(base);
     setMergeResult(threeWayMerge(base, ours, theirs));
     setResolutions({});
+    setHistory(createHistory());
     setMerged(null);
     setPatch([]);
     setRestoreInfo(null);
@@ -49,10 +62,32 @@ export default function App() {
     setBaseDoc(snapshot.base);
     setMergeResult(result);
     setResolutions(restored);
+    // 快照恢复的结果作为不可撤销的初始状态：历史从空开始
+    setHistory(createHistory());
     setMerged(null);
     setPatch([]);
     setRestoreInfo(summary);
     setStage('merge');
+  };
+
+  // 冲突页的每一次决策变更（手动单项 / 自定义值 / 一次批量规则应用整体）记为一个历史事务
+  const handleResolutionsChange = (next: Resolutions) => {
+    setHistory((h) => pushTransaction(h, diffResolutions(resolutions, next)));
+    setResolutions(next);
+  };
+
+  const handleUndo = () => {
+    const step = undoTransaction(history, resolutions);
+    if (!step) return;
+    setHistory(step.history);
+    setResolutions(step.resolutions);
+  };
+
+  const handleRedo = () => {
+    const step = redoTransaction(history, resolutions);
+    if (!step) return;
+    setHistory(step.history);
+    setResolutions(step.resolutions);
   };
 
   const handleFinish = () => {
@@ -69,6 +104,7 @@ export default function App() {
     setMergeResult(null);
     setBaseDoc(null);
     setResolutions({});
+    setHistory(createHistory());
     setMerged(null);
     setPatch([]);
     setRestoreInfo(null);
@@ -94,7 +130,11 @@ export default function App() {
           <MergeStage
             mergeResult={mergeResult}
             resolutions={resolutions}
-            onResolutionsChange={setResolutions}
+            onResolutionsChange={handleResolutionsChange}
+            canUndo={canUndo(history)}
+            canRedo={canRedo(history)}
+            onUndo={handleUndo}
+            onRedo={handleRedo}
             onFinish={handleFinish}
             onBack={handleRestart}
             restoreInfo={restoreInfo}

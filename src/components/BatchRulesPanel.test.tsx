@@ -56,6 +56,10 @@ function setup(initial: Resolutions = {}) {
           resolutions = r;
           rerender();
         }}
+        canUndo={false}
+        canRedo={false}
+        onUndo={() => {}}
+        onRedo={() => {}}
         onFinish={() => {}}
         onBack={() => {}}
         restoreInfo={null}
